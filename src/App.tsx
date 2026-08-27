@@ -126,17 +126,50 @@ export default function App() {
   const [params, setParams] = useState<GardenParams>(DEFAULTS);
   const [stats, setStats] = useState<GardenStats | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!mountRef.current) return;
-    const engine = new GardenEngine(mountRef.current, params, setStats);
-    engineRef.current = engine;
+    let engine: GardenEngine | null = null;
+    try {
+      engine = new GardenEngine(
+        mountRef.current,
+        params,
+        setStats,
+        () => {
+          setStatus('ready');
+          console.info('[Jardín Silvestre] escena 3D lista');
+        },
+        (m) => {
+          setStatus('error');
+          setErrorMsg(m);
+        }
+      );
+      engineRef.current = engine;
+    } catch (err) {
+      setStatus('error');
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    }
+    const onWinError = (e: ErrorEvent) => {
+      setStatus((s) => (s === 'ready' ? s : 'error'));
+      setErrorMsg(e.message || 'Error inesperado al iniciar la escena');
+    };
+    window.addEventListener('error', onWinError);
+    // red de seguridad: si la pestaña nace oculta, rAF no dispara el onReady
+    const fallback = window.setTimeout(
+      () => setStatus((s) => (s === 'loading' ? 'ready' : s)),
+      7000
+    );
     return () => {
-      engine.dispose();
+      window.clearTimeout(fallback);
+      window.removeEventListener('error', onWinError);
+      engine?.dispose();
       engineRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [attempt]);
 
   useEffect(() => {
     engineRef.current?.setParams(params);
@@ -290,6 +323,67 @@ export default function App() {
           </span>
         </div>
       </div>
+
+      {/* Pantalla de arranque */}
+      {status === 'loading' && (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-6 bg-[#070d09]">
+          <svg
+            className="sprout h-16 w-16 text-[#a8d860]"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <path d="M12 21v-8" strokeLinecap="round" />
+            <path
+              d="M12 13c0-4.2 2.6-6.8 7.2-7.3-.4 4.8-3 7.3-7.2 7.3Z"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M12 13c0-3.1-2-5.2-5.7-5.6.3 3.9 2.3 5.6 5.7 5.6Z"
+              strokeLinejoin="round"
+            />
+            <path d="M6.5 21h11" strokeLinecap="round" />
+          </svg>
+          <div className="text-center">
+            <div className="font-display text-[26px] italic text-[#f2f6e8]">
+              Sembrando el jardín…
+            </div>
+            <div className="mt-1.5 text-[12px] tracking-wide text-[#93a88e]">
+              Terreno, estanque, 9 000 hierbas y cerezos · un par de segundos
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pantalla de error con diagnóstico */}
+      {status === 'error' && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#070d09]/96 p-6">
+          <div className="w-full max-w-md rounded-lg border border-[#4a3a28] bg-[#161009] p-6 text-center shadow-[0_24px_80px_rgba(0,0,0,0.6)]">
+            <div className="font-display text-[24px] italic text-[#f0d9a8]">
+              El jardín no pudo brotar
+            </div>
+            <p className="mt-3 break-words rounded-md border border-[#3a2f20] bg-[#0d0a06] p-3 font-mono text-[11px] leading-relaxed text-[#d9b98a]">
+              {errorMsg || 'Error desconocido al iniciar la escena 3D.'}
+            </p>
+            <ul className="mx-auto mt-4 max-w-[330px] space-y-1.5 text-left text-[12px] leading-snug text-[#b9a583]">
+              <li>· Abre la consola (F12) para ver el detalle completo.</li>
+              <li>· Comprueba que la aceleración gráfica esté activada.</li>
+              <li>· Sirve la página por HTTP (npm run dev), no como archivo local.</li>
+            </ul>
+            <button
+              onClick={() => {
+                setStatus('loading');
+                setErrorMsg('');
+                setAttempt((a) => a + 1);
+              }}
+              className="mt-5 rounded-md border border-[#a8d860]/40 bg-[#a8d860]/12 px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#a8d860] transition-all hover:bg-[#a8d860]/22 active:scale-[0.97]"
+            >
+              Reintentar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

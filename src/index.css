@@ -81,3 +81,20 @@ aside::-webkit-scrollbar-thumb {
   background: #2c3f2e;
   border-radius: 3px;
 }
+
+/* brote animado de la pantalla de carga */
+@keyframes sprout-sway {
+  0%,
+  100% {
+    transform: rotate(-7deg) scale(0.94);
+    opacity: 0.75;
+  }
+  50% {
+    transform: rotate(7deg) scale(1.05);
+    opacity: 1;
+  }
+}
+.sprout {
+  animation: sprout-sway 1.7s ease-in-out infinite;
+  transform-origin: 50% 88%;
+}

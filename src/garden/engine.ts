@@ -352,7 +352,7 @@ uniform float uOpacity;
 varying float vPulse;
 void main() {
   float d = length(gl_PointCoord - 0.5);
-  float a = smoothstep(0.5, 0.05, d) * uOpacity * vPulse;
+  float a = (1.0 - smoothstep(0.05, 0.5, d)) * uOpacity * vPulse;
   if (a < 0.01) discard;
   gl_FragColor = vec4(uColor * (1.1 + vPulse * 0.9), a);
 }
@@ -511,15 +511,36 @@ export class GardenEngine {
   private statTimer = 0;
   private rebuildCooldown = 0;
   private audio = new GardenAudio();
+  private onReady?: () => void;
+  private onError?: (msg: string) => void;
+  private readySent = false;
+  private useComposer = true;
+  private frameFailures = 0;
 
   constructor(
     container: HTMLElement,
     params: GardenParams,
-    onStats: (s: GardenStats) => void
+    onStats: (s: GardenStats) => void,
+    onReady?: () => void,
+    onError?: (msg: string) => void
   ) {
     this.container = container;
     this.params = { ...params };
     this.onStats = onStats;
+    this.onReady = onReady;
+    this.onError = onError;
+
+    // three (r182+) requiere WebGL: si no hay contexto, avisamos en pantalla
+    const probe = document.createElement('canvas');
+    const hasGL = !!(
+      probe.getContext('webgl2') || probe.getContext('webgl')
+    );
+    if (!hasGL) {
+      throw new Error(
+        'Tu navegador no expone un contexto WebGL. Activa la aceleración gráfica (hardware acceleration) o abre la página en Chrome, Edge o Firefox actualizados.'
+      );
+    }
+
     this.seed = Math.floor(Math.random() * 1e9);
     this.noise = makeNoise(this.seed);
 
@@ -530,6 +551,7 @@ export class GardenEngine {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.setClearColor(new THREE.Color('#070d09'), 1);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -1722,78 +1744,104 @@ export class GardenEngine {
   private tick = () => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.tick);
-    const dt = Math.min(0.05, this.clock.getDelta());
-    const t = this.clock.elapsedTime;
+    try {
+      const dt = Math.min(0.05, this.clock.getDelta());
+      const t = this.clock.elapsedTime;
 
-    const env = this.updateEnvironment();
-    this.vegUniforms.uTime.value = t;
-    this.waterMat.uniforms.uTime.value = t;
-    this.fireflyMat.uniforms.uTime.value = t;
+      const env = this.updateEnvironment();
+      this.vegUniforms.uTime.value = t;
+      this.waterMat.uniforms.uTime.value = t;
+      this.fireflyMat.uniforms.uTime.value = t;
 
-    this.updatePetals(dt, t);
-    this.updateButterflies(t, dt);
+      this.updatePetals(dt, t);
+      this.updateButterflies(t, dt);
 
-    // nenúfares flotando
-    for (const l of this.lilies) {
-      l.position.y +=
-        (WATER_Y + 0.035 + Math.sin(t * 1.3 + l.userData.phase) * 0.012 -
-          l.position.y) *
-        Math.min(1, dt * 4);
-    }
-
-    // nubes a la deriva
-    for (const c of this.clouds) {
-      c.position.x += c.userData.speed * dt;
-      if (c.position.x > 70) c.position.x = -70;
-    }
-
-    // flores plantadas (pop elástico)
-    for (const p of this.planted) {
-      const k = clamp((t - p.t0) / 0.6, 0, 1);
-      const c1 = 1.70158;
-      const c3 = c1 + 1;
-      const ease =
-        1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2);
-      p.mesh.scale.setScalar(Math.max(0.001, p.s * ease));
-    }
-
-    // ondas de plantado
-    for (const b of this.bursts) {
-      const k = (t - b.t0) / 0.7;
-      if (k <= 0 || k >= 1) {
-        b.mesh.visible = false;
-        continue;
+      // nenúfares flotando
+      for (const l of this.lilies) {
+        l.position.y +=
+          (WATER_Y + 0.035 + Math.sin(t * 1.3 + l.userData.phase) * 0.012 -
+            l.position.y) *
+          Math.min(1, dt * 4);
       }
-      b.mesh.visible = true;
-      const s = 0.2 + k * 1.5;
-      b.mesh.scale.setScalar(s);
-      (b.mesh.material as THREE.MeshBasicMaterial).opacity = 0.75 * (1 - k);
-    }
 
-    this.controls.update();
-    this.composer.render();
-    void env;
+      // nubes a la deriva
+      for (const c of this.clouds) {
+        c.position.x += c.userData.speed * dt;
+        if (c.position.x > 70) c.position.x = -70;
+      }
 
-    // estadísticas
-    this.fps = this.fps * 0.92 + (1 / Math.max(dt, 1e-4)) * 0.08;
-    this.statTimer += dt;
-    if (this.statTimer > 0.25) {
-      this.statTimer = 0;
-      const h = this.params.timeOfDay;
-      const hh = Math.floor(h) % 24;
-      const mm = Math.floor((h % 1) * 60);
-      const phase =
-        h < 5.5 ? 'Noche' : h < 8 ? 'Amanecer' : h < 17.5 ? 'Día' : h < 20 ? 'Atardecer' : 'Noche';
-      this.onStats({
-        fps: Math.round(this.fps),
-        grass: this.grassCount,
-        flowers: this.flowerCount + this.planted.length,
-        petals: this.params.petals ? this.petals.length : 0,
-        fireflies: this.params.fireflies ? 140 : 0,
-        sunDeg: Math.round(Math.asin(clamp(this.sunDir.y, -1, 1)) * (180 / Math.PI)),
-        timeLabel: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`,
-        phase,
-      });
+      // flores plantadas (pop elástico)
+      for (const p of this.planted) {
+        const k = clamp((t - p.t0) / 0.6, 0, 1);
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        const ease =
+          1 + c3 * Math.pow(k - 1, 3) + c1 * Math.pow(k - 1, 2);
+        p.mesh.scale.setScalar(Math.max(0.001, p.s * ease));
+      }
+
+      // ondas de plantado
+      for (const b of this.bursts) {
+        const k = (t - b.t0) / 0.7;
+        if (k <= 0 || k >= 1) {
+          b.mesh.visible = false;
+          continue;
+        }
+        b.mesh.visible = true;
+        const s = 0.2 + k * 1.5;
+        b.mesh.scale.setScalar(s);
+        (b.mesh.material as THREE.MeshBasicMaterial).opacity = 0.75 * (1 - k);
+      }
+
+      this.controls.update();
+      // render con bloom; si algo del post-procesado falla en esta GPU,
+      // caemos a render directo para que el jardín nunca desaparezca
+      if (this.useComposer) {
+        try {
+          this.composer.render();
+        } catch {
+          this.useComposer = false;
+          this.renderer.render(this.scene, this.camera);
+        }
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
+      void env;
+
+      this.frameFailures = 0;
+      if (!this.readySent) {
+        this.readySent = true;
+        this.onReady?.();
+      }
+
+      // estadísticas
+      this.fps = this.fps * 0.92 + (1 / Math.max(dt, 1e-4)) * 0.08;
+      this.statTimer += dt;
+      if (this.statTimer > 0.25) {
+        this.statTimer = 0;
+        const h = this.params.timeOfDay;
+        const hh = Math.floor(h) % 24;
+        const mm = Math.floor((h % 1) * 60);
+        const phase =
+          h < 5.5 ? 'Noche' : h < 8 ? 'Amanecer' : h < 17.5 ? 'Día' : h < 20 ? 'Atardecer' : 'Noche';
+        this.onStats({
+          fps: Math.round(this.fps),
+          grass: this.grassCount,
+          flowers: this.flowerCount + this.planted.length,
+          petals: this.params.petals ? this.petals.length : 0,
+          fireflies: this.params.fireflies ? 140 : 0,
+          sunDeg: Math.round(Math.asin(clamp(this.sunDir.y, -1, 1)) * (180 / Math.PI)),
+          timeLabel: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`,
+          phase,
+        });
+      }
+    } catch (err) {
+      // si un frame revienta, lo contamos; tras varios avisamos a la interfaz
+      this.frameFailures++;
+      if (this.frameFailures > 20) {
+        cancelAnimationFrame(this.raf);
+        this.onError?.(err instanceof Error ? err.message : String(err));
+      }
     }
   };
 
