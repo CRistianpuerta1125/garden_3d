@@ -149,8 +149,20 @@ export default function App() {
       );
       engineRef.current = engine;
     } catch (err) {
+      console.error('[Jardín Silvestre] fallo al iniciar la escena:', err);
       setStatus('error');
-      setErrorMsg(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      const stack =
+        err instanceof Error && err.stack
+          ? '\n' +
+            err.stack
+              .split('\n')
+              .slice(1, 4)
+              .map((l) => l.trim())
+              .filter(Boolean)
+              .join('\n')
+          : '';
+      setErrorMsg(msg + stack);
     }
     const onWinError = (e: ErrorEvent) => {
       setStatus((s) => (s === 'ready' ? s : 'error'));

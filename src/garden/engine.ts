@@ -85,6 +85,43 @@ function makeNoise(seed: number) {
   return { val, fbm };
 }
 
+/**
+ * Une piezas de geometría de forma segura.
+ *
+ * Causa raíz del bug original: mergeGeometries devuelve null si se mezclan
+ * piezas indexadas (Cylinder, Sphere, Cone…) con piezas SIN índice
+ * (Icosahedron/Polyhedron — three las construye "non-indexed"). La amapola
+ * mezclaba ambos tipos y el null reventaba el constructor entero.
+ * Aquí normalizamos el índice antes de unir y, si aun así fallara,
+ * devolvemos geometría de respaldo: la escena nunca recibe un null.
+ */
+function safeMerge(parts: THREE.BufferGeometry[], label: string): THREE.BufferGeometry {
+  const hasIndexed = parts.some((p) => p.index !== null);
+  const hasNonIndexed = parts.some((p) => p.index === null);
+  const list =
+    hasIndexed && hasNonIndexed
+      ? parts.map((p) => (p.index !== null ? p.toNonIndexed() : p))
+      : parts;
+  const merged = mergeGeometries(list);
+  if (merged) return merged;
+  console.error(`[Jardín] mergeGeometries falló en "${label}"; usando respaldo.`);
+  return parts[0].clone();
+}
+
+/** Mensaje de error legible + primeras líneas de la pila. */
+function formatErr(err: unknown): string {
+  if (err instanceof Error) {
+    const stack = (err.stack ?? '')
+      .split('\n')
+      .slice(1, 4)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join('\n');
+    return stack ? `${err.message}\n${stack}` : err.message;
+  }
+  return String(err);
+}
+
 /* ============================================================
    Audio: viento + campanillas al plantar
 ============================================================ */
@@ -456,7 +493,7 @@ export class GardenEngine {
   private skyMat: THREE.ShaderMaterial;
   private waterMat: THREE.ShaderMaterial;
   private starsMat: THREE.PointsMaterial;
-  private fireflyMat: THREE.ShaderMaterial;
+  private fireflyMat: THREE.ShaderMaterial | null = null;
   private lanternLights: THREE.PointLight[] = [];
   private lanternHeads: THREE.MeshLambertMaterial[] = [];
   private lanternGlows: THREE.SpriteMaterial[] = [];
@@ -483,7 +520,7 @@ export class GardenEngine {
   private grassCols: { a: THREE.Color; b: THREE.Color };
 
   // vida
-  private petalMesh!: THREE.InstancedMesh;
+  private petalMesh: THREE.InstancedMesh | null = null;
   private petals: Petal[] = [];
   private petalDummy = new THREE.Object3D();
   private blossomSpots: THREE.Vector3[] = [];
@@ -630,17 +667,20 @@ export class GardenEngine {
     this.starsMat = this.buildStars();
     this.buildGround();
     this.waterMat = this.buildPond();
-    this.buildStonesAndBench();
-    this.buildTrees();
-    this.buildLanterns();
-    this.buildClouds();
+    // secciones decorativas protegidas: un fallo local no apaga el jardín
+    this.step('piedras y sendero', () => this.buildStonesAndBench());
+    this.step('árboles', () => this.buildTrees());
+    this.step('faroles', () => this.buildLanterns());
+    this.step('nubes', () => this.buildClouds());
     this.bladeGeo = this.makeBladeGeometry();
     this.flowerGeos = this.makeFlowerGeometries();
     this.rebuildGrass();
     this.rebuildFlowers();
-    this.buildPetals();
-    this.buildButterflies();
-    this.fireflyMat = this.buildFireflies();
+    this.step('pétalos', () => this.buildPetals());
+    this.step('mariposas', () => this.buildButterflies());
+    this.step('luciérnagas', () => {
+      this.fireflyMat = this.buildFireflies();
+    });
     this.scene.add(this.grassGroup, this.flowerGroup);
 
     /* --- eventos --- */
@@ -651,6 +691,18 @@ export class GardenEngine {
     el.addEventListener('pointerup', this.onUp);
 
     this.tick();
+  }
+
+  /**
+   * Construye una sección opcional del mundo. Si algo revienta en esta
+   * GPU/navegador, la sección se omite y el resto del jardín sigue vivo.
+   */
+  private step(name: string, fn: () => void) {
+    try {
+      fn();
+    } catch (err) {
+      console.error(`[Jardín] la sección "${name}" falló y se omitió:`, err);
+    }
   }
 
   /* ================= terreno ================= */
@@ -1038,8 +1090,8 @@ export class GardenEngine {
         part.translate((j - 1) * 2.1, rand() * 0.5, (rand() - 0.5) * 1.4);
         parts.push(part);
       }
-      const merged = mergeGeometries(parts);
-      const mesh = new THREE.Mesh(merged!, mat);
+      const merged = safeMerge(parts, 'nube');
+      const mesh = new THREE.Mesh(merged, mat);
       const a = rand() * Math.PI * 2;
       const rr = 22 + rand() * 34;
       mesh.position.set(Math.cos(a) * rr, 26 + rand() * 9, Math.sin(a) * rr);
@@ -1186,7 +1238,7 @@ export class GardenEngine {
         petal.translate(0, 0.58, 0);
         parts.push(petal);
       }
-      geos.push(mergeGeometries(parts)!);
+      geos.push(safeMerge(parts, 'margarita'));
     }
 
     // — amapola —
@@ -1203,7 +1255,7 @@ export class GardenEngine {
       calyx.rotateX(Math.PI);
       calyx.translate(0, 0.48, 0);
       parts.push(calyx);
-      geos.push(mergeGeometries(parts)!);
+      geos.push(safeMerge(parts, 'amapola'));
     }
 
     // — lavanda —
@@ -1227,7 +1279,7 @@ export class GardenEngine {
       leaf.rotateY(-0.6);
       leaf.translate(-0.08, 0.3, 0);
       parts.push(leaf);
-      geos.push(mergeGeometries(parts)!);
+      geos.push(safeMerge(parts, 'lavanda'));
     }
 
     // — tulipán dorado —
@@ -1247,7 +1299,7 @@ export class GardenEngine {
       leaf.rotateY(0.4);
       leaf.translate(0.1, 0.2, 0);
       parts.push(leaf);
-      geos.push(mergeGeometries(parts)!);
+      geos.push(safeMerge(parts, 'tulipan'));
     }
 
     for (const geo of geos) {
@@ -1309,6 +1361,13 @@ export class GardenEngine {
     buckets.forEach((bucket, sp) => {
       if (bucket.length === 0) return;
       const base = this.flowerGeos[sp];
+      if (
+        !base ||
+        !base.getAttribute('position') ||
+        !base.getAttribute('normal') ||
+        !base.getAttribute('color')
+      )
+        return;
       const g = new THREE.InstancedBufferGeometry();
       g.setAttribute('position', base.getAttribute('position'));
       g.setAttribute('normal', base.getAttribute('normal'));
@@ -1389,6 +1448,7 @@ export class GardenEngine {
   }
 
   private updatePetals(dt: number, t: number) {
+    if (!this.petalMesh) return;
     const wind = this.params.wind;
     const spots = this.blossomSpots;
     if (spots.length === 0) return;
@@ -1698,8 +1758,10 @@ export class GardenEngine {
 
     // estrellas y luciérnagas
     this.starsMat.opacity = dusk * 0.9;
-    this.fireflyMat.uniforms.uOpacity.value =
-      this.params.fireflies ? dusk * 0.95 : 0;
+    if (this.fireflyMat)
+      this.fireflyMat.uniforms.uOpacity.value = this.params.fireflies
+        ? dusk * 0.95
+        : 0;
 
     // agua
     const wu = this.waterMat.uniforms;
@@ -1751,7 +1813,7 @@ export class GardenEngine {
       const env = this.updateEnvironment();
       this.vegUniforms.uTime.value = t;
       this.waterMat.uniforms.uTime.value = t;
-      this.fireflyMat.uniforms.uTime.value = t;
+      if (this.fireflyMat) this.fireflyMat.uniforms.uTime.value = t;
 
       this.updatePetals(dt, t);
       this.updateButterflies(t, dt);
@@ -1840,7 +1902,7 @@ export class GardenEngine {
       this.frameFailures++;
       if (this.frameFailures > 20) {
         cancelAnimationFrame(this.raf);
-        this.onError?.(err instanceof Error ? err.message : String(err));
+        this.onError?.(formatErr(err));
       }
     }
   };
