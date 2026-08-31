@@ -564,8 +564,8 @@ export class GardenEngine {
 
   private animate = () => {
     this.animFrameId = requestAnimationFrame(this.animate);
+    const delta = Math.min(this.clock.getDelta(), 0.1);
     const elapsedTime = this.clock.getElapsedTime();
-    const delta = this.clock.getDelta();
 
     this.controls.update();
     this.updateEnvironment();
@@ -627,8 +627,8 @@ export class GardenEngine {
     // FPS Stats
     this.fpsCount++;
     this.fpsTimer += delta;
-    if (this.fpsTimer >= 1) {
-      this.currentFps = this.fpsCount;
+    if (this.fpsTimer >= 0.25) {
+      this.currentFps = Math.round(this.fpsCount / Math.max(0.001, this.fpsTimer));
       this.fpsCount = 0;
       this.fpsTimer = 0;
 
@@ -641,7 +641,7 @@ export class GardenEngine {
         flowers: this.modelsGroup.children.length,
         petals: this.params.petals ? 70 : 0,
         fireflies: this.params.fireflies && isNight ? 60 : 0,
-        sunDeg: Math.round(this.params.timeOfDay * 15),
+        sunDeg: Math.round((this.params.timeOfDay / 24) * 360),
         timeLabel: hourLabel,
         phase: isNight ? 'Noche' : 'Día',
       });
