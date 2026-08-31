@@ -86,6 +86,21 @@ class GardenAudio {
     }
   }
 
+  pluck() {
+    if (!this.ctx || !this.master || !this.enabled) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 523.25; // C5
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.2, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+    osc.connect(g).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.8);
+  }
+
   dispose() {
     if (this.ctx) this.ctx.close().catch(() => undefined);
     this.ctx = null;
@@ -116,7 +131,21 @@ export class GardenEngine {
     plant?: THREE.Group;
     roses?: THREE.Group;
     rocks?: THREE.Group;
+    welcome?: THREE.Group;
   } = {};
+
+  // Raycaster para Clicks
+  private raycaster = new THREE.Raycaster();
+  private mouse = new THREE.Vector2();
+  private downPos = { x: 0, y: 0 };
+  private magicFlowerIndex: number = -1;
+
+  // Letrero 3D "WELCOME"
+  private welcomeSignGroup = new THREE.Group();
+  private welcomeVisible = false;
+  private welcomeTargetScale = 0;
+  private welcomeCurrentScale = 0;
+  private welcomeBaseY = 0;
 
   // Partículas y Efectos
   private firefliesMesh: THREE.Points | null = null;
@@ -218,14 +247,18 @@ export class GardenEngine {
 
     this.scene.add(this.modelsGroup);
     this.scene.add(this.butterfliesGroup);
+    this.scene.add(this.welcomeSignGroup);
 
-    // Build Effects
+    // Build Effects & Placeholder Welcome Sign
     this.buildFireflies();
     this.buildPetals();
     this.buildButterflies();
+    this.buildFallbackWelcomeSign();
 
     // Event listeners
     window.addEventListener('resize', this.onResize);
+    this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
 
     // Load Models
     this.loadModels();
@@ -244,6 +277,7 @@ export class GardenEngine {
       { key: 'plant', path: '/models/plant.glb', targetH: 1.6 },
       { key: 'roses', path: '/models/roses_flower.glb', targetH: 1.2 },
       { key: 'rocks', path: '/models/rocks.glb', targetH: 1.0 },
+      { key: 'welcome', path: '/models/welcome.glb', targetH: 2.2 },
     ];
 
     let loaded = 0;
@@ -283,16 +317,23 @@ export class GardenEngine {
           wrapper.add(model);
 
           this.loadedModels[asset.key as keyof typeof this.loadedModels] = wrapper;
-          loaded++;
 
+          // Si es el modelo welcome.glb cargado, reemplazar el placeholder
+          if (asset.key === 'welcome') {
+            while (this.welcomeSignGroup.children.length > 0) {
+              this.welcomeSignGroup.remove(this.welcomeSignGroup.children[0]);
+            }
+            this.welcomeSignGroup.add(wrapper);
+          }
+
+          loaded++;
           if (loaded === assets.length) {
             this.buildGardenScene();
             if (this.onReady) this.onReady();
           }
         },
         undefined,
-        (err) => {
-          console.error(`Error loading model ${asset.path}:`, err);
+        () => {
           loaded++;
           if (loaded === assets.length) {
             this.buildGardenScene();
@@ -303,6 +344,30 @@ export class GardenEngine {
     });
   }
 
+  private buildFallbackWelcomeSign() {
+    // Letrero 3D elegante por defecto mientras suben el archivo welcome.glb
+    const signBox = new THREE.Mesh(
+      new THREE.BoxGeometry(2.4, 0.8, 0.12),
+      new THREE.MeshStandardMaterial({ color: '#5a3d28', roughness: 0.6 })
+    );
+
+    const textBorder = new THREE.Mesh(
+      new THREE.BoxGeometry(2.2, 0.6, 0.14),
+      new THREE.MeshStandardMaterial({ color: '#e6c26a', roughness: 0.3, emissive: '#d4af37', emissiveIntensity: 0.2 })
+    );
+
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 1.4),
+      new THREE.MeshStandardMaterial({ color: '#3a271a' })
+    );
+    post.position.y = -0.7;
+
+    const group = new THREE.Group();
+    group.add(signBox, textBorder, post);
+    this.welcomeSignGroup.add(group);
+    this.welcomeSignGroup.scale.setScalar(0);
+  }
+
   public buildGardenScene() {
     while (this.modelsGroup.children.length > 0) {
       this.modelsGroup.remove(this.modelsGroup.children[0]);
@@ -310,6 +375,7 @@ export class GardenEngine {
 
     const flowerCount = Math.floor(60 * this.params.flowerDensity);
     const plantCount = Math.floor(40 * this.params.flowerDensity);
+    const flowerObjects: THREE.Object3D[] = [];
 
     // 1. Árboles
     if (this.loadedModels.tree) {
@@ -345,8 +411,9 @@ export class GardenEngine {
         rose.position.set(x, 0, z);
         rose.rotation.y = rotY;
         rose.scale.setScalar(s);
-        rose.userData = { initialRotY: rotY, isPlant: true, phase: Math.random() * 10 };
+        rose.userData = { initialRotY: rotY, isPlant: true, phase: Math.random() * 10, isFlower: true };
         this.modelsGroup.add(rose);
+        flowerObjects.push(rose);
       }
     }
 
@@ -364,8 +431,9 @@ export class GardenEngine {
         plant.position.set(x, 0, z);
         plant.rotation.y = rotY;
         plant.scale.setScalar(s);
-        plant.userData = { initialRotY: rotY, isPlant: true, phase: Math.random() * 10 };
+        plant.userData = { initialRotY: rotY, isPlant: true, phase: Math.random() * 10, isFlower: true };
         this.modelsGroup.add(plant);
+        flowerObjects.push(plant);
       }
     }
 
@@ -384,7 +452,50 @@ export class GardenEngine {
         this.modelsGroup.add(rock);
       });
     }
+
+    // Designar una flor especial mágica
+    if (flowerObjects.length > 0) {
+      this.magicFlowerIndex = Math.floor(Math.random() * flowerObjects.length);
+      flowerObjects[this.magicFlowerIndex].userData.isMagic = true;
+    }
   }
+
+  /* ============================================================
+     Interacción Click / Raycaster
+  ============================================================ */
+
+  private onPointerDown = (e: PointerEvent) => {
+    this.downPos = { x: e.clientX, y: e.clientY };
+  };
+
+  private onPointerUp = (e: PointerEvent) => {
+    const dist = Math.hypot(e.clientX - this.downPos.x, e.clientY - this.downPos.y);
+    if (dist > 6) return; // Si arrastró la cámara, no cuenta como click
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.modelsGroup.children, true);
+
+    if (intersects.length > 0) {
+      let obj: THREE.Object3D | null = intersects[0].object;
+      while (obj && obj.parent && obj.parent !== this.modelsGroup) {
+        obj = obj.parent;
+      }
+
+      if (obj) {
+        // Revelar o alternar el letrero 3D Welcome
+        this.welcomeVisible = !this.welcomeVisible;
+        this.welcomeTargetScale = this.welcomeVisible ? 1 : 0;
+        this.welcomeBaseY = obj.position.y + 1.8;
+
+        this.welcomeSignGroup.position.set(obj.position.x, this.welcomeBaseY, obj.position.z);
+        this.audio.pluck();
+      }
+    }
+  };
 
   /* ============================================================
      Sistemas de Partículas & Fauna
@@ -478,14 +589,12 @@ export class GardenEngine {
   private updateEnvironment() {
     const hour = this.params.timeOfDay;
 
-    // Calcular posición e intensidad solar
     const theta = ((hour - 6) / 24) * Math.PI * 2;
     const sunY = Math.sin(theta);
     const sunX = Math.cos(theta);
 
     this.dirLight.position.set(sunX * 30, Math.max(sunY * 30, -5), 15);
 
-    // Transición de colores por hora
     const isNight = hour < 6 || hour > 19;
     const isSunset = (hour >= 17 && hour <= 19) || (hour >= 5 && hour <= 6);
 
@@ -508,7 +617,6 @@ export class GardenEngine {
     this.dirLight.color = sunColor;
     this.dirLight.intensity = lightIntensity;
 
-    // Visibilidad de Luciérnagas, Pétalos y Mariposas
     if (this.firefliesMesh) {
       this.firefliesMesh.visible = this.params.fireflies && isNight;
     }
@@ -517,7 +625,6 @@ export class GardenEngine {
     }
     this.butterfliesGroup.visible = this.params.butterflies && !isNight;
 
-    // Bloom Strength
     this.bloomPass.strength = this.params.bloom * 0.7;
   }
 
@@ -545,6 +652,8 @@ export class GardenEngine {
   }
 
   public replant() {
+    this.welcomeVisible = false;
+    this.welcomeTargetScale = 0;
     this.buildGardenScene();
   }
 
@@ -570,7 +679,15 @@ export class GardenEngine {
     this.controls.update();
     this.updateEnvironment();
 
-    // Bamboleo por Viento en plantas y árboles
+    // Animación del letrero Welcome (escala y bamboleo flotante)
+    this.welcomeCurrentScale = THREE.MathUtils.lerp(this.welcomeCurrentScale, this.welcomeTargetScale, delta * 8);
+    this.welcomeSignGroup.scale.setScalar(this.welcomeCurrentScale);
+    if (this.welcomeCurrentScale > 0.01) {
+      this.welcomeSignGroup.position.y = this.welcomeBaseY + Math.sin(elapsedTime * 2.5) * 0.12;
+      this.welcomeSignGroup.rotation.y = Math.sin(elapsedTime * 1.2) * 0.15;
+    }
+
+    // Bamboleo por Viento
     const windSpeed = this.params.wind;
     if (windSpeed > 0) {
       this.modelsGroup.children.forEach((child) => {
@@ -582,7 +699,7 @@ export class GardenEngine {
       });
     }
 
-    // Animación de Luciérnagas
+    // Luciérnagas
     if (this.firefliesMesh && this.fireflyPositions && this.firefliesMesh.visible) {
       const posAttr = this.firefliesMesh.geometry.getAttribute('position');
       for (let i = 0; i < posAttr.count; i++) {
@@ -593,7 +710,7 @@ export class GardenEngine {
       posAttr.needsUpdate = true;
     }
 
-    // Animación de Pétalos al Viento
+    // Pétalos
     if (this.petalsMesh && this.params.petals) {
       for (let i = 0; i < this.petalData.length; i++) {
         const p = this.petalData[i];
@@ -609,7 +726,7 @@ export class GardenEngine {
       this.petalsMesh.instanceMatrix.needsUpdate = true;
     }
 
-    // Animación de Mariposas
+    // Mariposas
     if (this.params.butterflies && this.butterfliesGroup.visible) {
       this.butterflies.forEach((b) => {
         b.angle += delta * b.speed;
@@ -653,6 +770,8 @@ export class GardenEngine {
   public dispose() {
     cancelAnimationFrame(this.animFrameId);
     window.removeEventListener('resize', this.onResize);
+    this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
     this.audio.dispose();
     this.controls.dispose();
     this.renderer.dispose();
